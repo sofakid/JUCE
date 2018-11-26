@@ -10,11 +10,11 @@
 
 */
 
-#ifndef __APPHEADERFILE_M70QFTRRK__
-#define __APPHEADERFILE_M70QFTRRK__
+#pragma once
 
 #include "AppConfig.h"
 
+#include <juce_analytics/juce_analytics.h>
 #include <juce_core/juce_core.h>
 #include <juce_cryptography/juce_cryptography.h>
 #include <juce_data_structures/juce_data_structures.h>
@@ -35,9 +35,8 @@
 namespace ProjectInfo
 {
     const char* const  projectName    = "Projucer";
-    const char* const  versionString  = "4.3.1";
-    const int          versionNumber  = 0x40301;
+    const char* const  companyName    = "ROLI Ltd.";
+    const char* const  versionString  = "5.4.1";
+    const int          versionNumber  = 0x50401;
 }
 #endif
-
-#endif   // __APPHEADERFILE_M70QFTRRK__

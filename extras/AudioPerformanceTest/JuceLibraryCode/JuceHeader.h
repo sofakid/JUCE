@@ -10,8 +10,7 @@
 
 */
 
-#ifndef __APPHEADERFILE_AKFC5M__
-#define __APPHEADERFILE_AKFC5M__
+#pragma once
 
 #include "AppConfig.h"
 
@@ -38,9 +37,8 @@
 namespace ProjectInfo
 {
     const char* const  projectName    = "AudioPerformanceTest";
+    const char* const  companyName    = "ROLI Ltd.";
     const char* const  versionString  = "1.0.0";
     const int          versionNumber  = 0x10000;
 }
 #endif
-
-#endif   // __APPHEADERFILE_AKFC5M__

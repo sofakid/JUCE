@@ -2,26 +2,32 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2015 - ROLI Ltd.
+   Copyright (c) 2017 - ROLI Ltd.
 
-   Permission is granted to use this software under the terms of either:
-   a) the GPL v2 (or any later version)
-   b) the Affero GPL v3
+   JUCE is an open source library subject to commercial or open-source
+   licensing.
 
-   Details of these licenses can be found at: www.gnu.org/licenses
+   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
+   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
+   27th April 2017).
 
-   JUCE is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-   A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+   End User License Agreement: www.juce.com/juce-5-licence
+   Privacy Policy: www.juce.com/juce-5-privacy-policy
 
-   ------------------------------------------------------------------------------
+   Or: You may also use this code under the terms of the GPL v3 (see
+   www.gnu.org/licenses).
 
-   To release a closed-source product which uses JUCE, commercial licenses are
-   available: visit www.juce.com for more information.
+   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
+   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
+   DISCLAIMED.
 
   ==============================================================================
 */
 
+#pragma once
+
+
+//==============================================================================
 struct AudioPluginAppWizard   : public NewProjectWizard
 {
     AudioPluginAppWizard()  {}
@@ -34,6 +40,8 @@ struct AudioPluginAppWizard   : public NewProjectWizard
     {
         StringArray s (NewProjectWizard::getDefaultModules());
         s.add ("juce_audio_plugin_client");
+        s.add ("juce_audio_utils");
+
         return s;
     }
 
@@ -50,37 +58,32 @@ struct AudioPluginAppWizard   : public NewProjectWizard
         File editorCppFile = getSourceFilesFolder().getChildFile ("PluginEditor.cpp");
         File editorHFile   = editorCppFile.withFileExtension (".h");
 
-        project.getProjectTypeValue() = ProjectType_AudioPlugin::getTypeName();
-
-        Project::Item sourceGroup (createSourceGroup (project));
-        project.getConfigFlag ("JUCE_QUICKTIME") = Project::configFlagDisabled; // disabled because it interferes with RTAS build on PC
+        project.setProjectType (ProjectType_AudioPlugin::getTypeName());
 
         setExecutableNameForAllTargets (project, File::createLegalFileName (appTitle));
 
         String appHeaders (CodeHelpers::createIncludeStatement (project.getAppIncludeFile(), filterCppFile));
 
         String filterCpp = project.getFileTemplate ("jucer_AudioPluginFilterTemplate_cpp")
-                            .replace ("FILTERHEADERS", CodeHelpers::createIncludeStatement (filterHFile, filterCppFile)
+                            .replace ("%%filter_headers%%", CodeHelpers::createIncludeStatement (filterHFile, filterCppFile)
                                                             + newLine + CodeHelpers::createIncludeStatement (editorHFile, filterCppFile), false)
-                            .replace ("FILTERCLASSNAME", filterClassName, false)
-                            .replace ("EDITORCLASSNAME", editorClassName, false);
+                            .replace ("%%filter_class_name%%", filterClassName, false)
+                            .replace ("%%editor_class_name%%", editorClassName, false);
 
         String filterH = project.getFileTemplate ("jucer_AudioPluginFilterTemplate_h")
-                            .replace ("APPHEADERS", appHeaders, false)
-                            .replace ("FILTERCLASSNAME", filterClassName, false)
-                            .replace ("HEADERGUARD", CodeHelpers::makeHeaderGuardName (filterHFile), false);
+                            .replace ("%%app_headers%%", appHeaders, false)
+                            .replace ("%%filter_class_name%%", filterClassName, false);
 
         String editorCpp = project.getFileTemplate ("jucer_AudioPluginEditorTemplate_cpp")
-                            .replace ("EDITORCPPHEADERS", CodeHelpers::createIncludeStatement (filterHFile, filterCppFile)
+                            .replace ("%%editor_cpp_headers%%", CodeHelpers::createIncludeStatement (filterHFile, filterCppFile)
                                                                + newLine + CodeHelpers::createIncludeStatement (editorHFile, filterCppFile), false)
-                            .replace ("FILTERCLASSNAME", filterClassName, false)
-                            .replace ("EDITORCLASSNAME", editorClassName, false);
+                            .replace ("%%filter_class_name%%", filterClassName, false)
+                            .replace ("%%editor_class_name%%", editorClassName, false);
 
         String editorH = project.getFileTemplate ("jucer_AudioPluginEditorTemplate_h")
-                            .replace ("EDITORHEADERS", appHeaders + newLine + CodeHelpers::createIncludeStatement (filterHFile, filterCppFile), false)
-                            .replace ("FILTERCLASSNAME", filterClassName, false)
-                            .replace ("EDITORCLASSNAME", editorClassName, false)
-                            .replace ("HEADERGUARD", CodeHelpers::makeHeaderGuardName (editorHFile), false);
+                            .replace ("%%editor_headers%%", appHeaders + newLine + CodeHelpers::createIncludeStatement (filterHFile, filterCppFile), false)
+                            .replace ("%%filter_class_name%%", filterClassName, false)
+                            .replace ("%%editor_class_name%%", editorClassName, false);
 
         if (! FileHelpers::overwriteFileWithNewDataIfDifferent (filterCppFile, filterCpp))
             failedFiles.add (filterCppFile.getFullPathName());
@@ -94,10 +97,14 @@ struct AudioPluginAppWizard   : public NewProjectWizard
         if (! FileHelpers::overwriteFileWithNewDataIfDifferent (editorHFile, editorH))
             failedFiles.add (editorHFile.getFullPathName());
 
+        Project::Item sourceGroup (createSourceGroup (project));
+
         sourceGroup.addFileAtIndex (filterCppFile, -1, true);
         sourceGroup.addFileAtIndex (filterHFile,   -1, false);
         sourceGroup.addFileAtIndex (editorCppFile, -1, true);
         sourceGroup.addFileAtIndex (editorHFile,   -1, false);
+
+        project.getConfigFlag ("JUCE_VST3_CAN_REPLACE_VST2") = 0;
 
         return true;
     }

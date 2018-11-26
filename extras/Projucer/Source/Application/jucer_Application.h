@@ -2,40 +2,47 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2015 - ROLI Ltd.
+   Copyright (c) 2017 - ROLI Ltd.
 
-   Permission is granted to use this software under the terms of either:
-   a) the GPL v2 (or any later version)
-   b) the Affero GPL v3
+   JUCE is an open source library subject to commercial or open-source
+   licensing.
 
-   Details of these licenses can be found at: www.gnu.org/licenses
+   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
+   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
+   27th April 2017).
 
-   JUCE is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-   A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+   End User License Agreement: www.juce.com/juce-5-licence
+   Privacy Policy: www.juce.com/juce-5-privacy-policy
 
-   ------------------------------------------------------------------------------
+   Or: You may also use this code under the terms of the GPL v3 (see
+   www.gnu.org/licenses).
 
-   To release a closed-source product which uses JUCE, commercial licenses are
-   available: visit www.juce.com for more information.
+   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
+   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
+   DISCLAIMED.
 
   ==============================================================================
 */
 
-#ifndef JUCER_APPLICATION_H_INCLUDED
-#define JUCER_APPLICATION_H_INCLUDED
+#pragma once
 
 #include "jucer_MainWindow.h"
 #include "../Project/jucer_Module.h"
 #include "jucer_AutoUpdater.h"
-#include "../Code Editor/jucer_SourceCodeEditor.h"
-#include "../Utility/jucer_ProjucerLookAndFeel.h"
+#include "../CodeEditor/jucer_SourceCodeEditor.h"
+#include "../Utility/UI/jucer_ProjucerLookAndFeel.h"
+#include "../Licenses/jucer_LicenseController.h"
+
+#if JUCE_MODULE_AVAILABLE_juce_analytics
+ #include "jucer_ProjucerAnalytics.h"
+#endif
+
 struct ChildProcessCache;
 
 //==============================================================================
 class ProjucerApplication   : public JUCEApplication,
-                              private Timer,
-                              private AsyncUpdater
+                              private AsyncUpdater,
+                              private LicenseController::StateChangedCallback
 {
 public:
     ProjucerApplication();
@@ -72,7 +79,9 @@ public:
     void createBuildMenu (PopupMenu&);
     void createColourSchemeItems (PopupMenu&);
     void createWindowMenu (PopupMenu&);
+    void createDocumentMenu (PopupMenu&);
     void createToolsMenu (PopupMenu&);
+    void createHelpMenu (PopupMenu&);
     void createExtraAppleMenuItems (PopupMenu&);
     void handleMainMenuCommand (int menuItemID);
 
@@ -83,63 +92,126 @@ public:
 
     //==============================================================================
     void createNewProject();
-    void updateNewlyOpenedProject (Project&);
+    void createNewProjectFromClipboard();
+    void createNewPIP();
     void askUserToOpenFile();
     bool openFile (const File&);
+    void saveAllDocuments();
     bool closeAllDocuments (bool askUserToSave);
     bool closeAllMainWindows();
+    void closeAllMainWindowsAndQuitIfNeeded();
+    void clearRecentFiles();
 
-    PropertiesFile::Options getPropertyFileOptionsFor (const String& filename);
+    PropertiesFile::Options getPropertyFileOptionsFor (const String& filename, bool isProjectSettings);
 
     //==============================================================================
     void showUTF8ToolWindow();
     void showSVGPathDataToolWindow();
 
-    void addLiveBuildConfigItem (Project&, TreeViewItem&);
+    void showAboutWindow();
+    void showApplicationUsageDataAgreementPopup();
+    void dismissApplicationUsageDataAgreementPopup();
 
-    void showLoginForm();
-    void hideLoginForm();
+    void showPathsWindow (bool highlightJUCEPath = false);
+    void showEditorColourSchemeWindow();
+
+    void showPIPCreatorWindow();
+
+    void launchForumBrowser();
+    void launchModulesBrowser();
+    void launchClassesBrowser();
+    void launchTutorialsBrowser();
 
     void updateAllBuildTabs();
     LatestVersionChecker* createVersionChecker() const;
 
     //==============================================================================
+    void licenseStateChanged (const LicenseState&) override;
+    void doLogout();
+
+    bool isPaidOrGPL() const              { return licenseController == nullptr || licenseController->getState().isPaidOrGPL(); }
+
+    //==============================================================================
+    void selectEditorColourSchemeWithName (const String& schemeName);
+    static bool isEditorColourSchemeADefaultScheme (const StringArray& schemes, int editorColourSchemeIndex);
+    static int getEditorColourSchemeForGUIColourScheme (const StringArray& schemes, int guiColourSchemeIndex);
+
+    //==============================================================================
+    void setAnalyticsEnabled (bool);
+
+    //==============================================================================
+    void rescanJUCEPathModules();
+    void rescanUserPathModules();
+
+    AvailableModuleList& getJUCEPathModuleList()     { return jucePathModuleList; }
+    AvailableModuleList& getUserPathsModuleList()    { return userPathsModuleList; }
+
+    //==============================================================================
     ProjucerLookAndFeel lookAndFeel;
 
-    ScopedPointer<StoredSettings> settings;
-    ScopedPointer<Icons> icons;
+    std::unique_ptr<StoredSettings> settings;
+    std::unique_ptr<Icons> icons;
 
     struct MainMenuModel;
-    ScopedPointer<MainMenuModel> menuModel;
+    std::unique_ptr<MainMenuModel> menuModel;
 
     MainWindowList mainWindowList;
     OpenDocumentManager openDocumentManager;
-    ScopedPointer<ApplicationCommandManager> commandManager;
+    std::unique_ptr<ApplicationCommandManager> commandManager;
 
-    ScopedPointer<Component> appearanceEditorWindow, globalPreferencesWindow, utf8Window, svgPathWindow;
-    ScopedPointer<FileLogger> logger;
+    std::unique_ptr<Component> utf8Window, svgPathWindow, aboutWindow, applicationUsageDataWindow,
+                               pathsWindow, editorColourSchemeWindow, pipCreatorWindow;
+
+    std::unique_ptr<FileLogger> logger;
 
     bool isRunningCommandLine;
-    ScopedPointer<ChildProcessCache> childProcessCache;
+    std::unique_ptr<ChildProcessCache> childProcessCache;
+    std::unique_ptr<LicenseController> licenseController;
 
 private:
-    void* server = nullptr;
-
-    Component* loginForm = nullptr;
-    ScopedPointer<LatestVersionChecker> versionChecker;
-
-    void loginOrLogout();
-
-    bool checkEULA();
-    bool currentEULAHasBeenAcceptedPreviously() const;
-    String getEULAChecksumProperty() const;
-    void setCurrentEULAAccepted (bool hasBeenAccepted) const;
-
-    void showLoginFormAsyncIfNotTriedRecently();
-    void timerCallback() override;
+    //==============================================================================
     void handleAsyncUpdate() override;
     void initCommandManager();
+
+    void createExamplesPopupMenu (PopupMenu&) noexcept;
+    Array<File> getSortedExampleDirectories() noexcept;
+    Array<File> getSortedExampleFilesInDirectory (const File&) const noexcept;
+    bool findWindowAndOpenPIP (const File&);
+    void findAndLaunchExample (int);
+
+    void checkIfGlobalJUCEPathHasChanged();
+    File tryToFindDemoRunnerExecutable();
+    File tryToFindDemoRunnerProject();
+    void launchDemoRunner();
+
+    void resetAnalytics() noexcept;
+    void setupAnalytics();
+
+    void showSetJUCEPathAlert();
+
+    void setColourScheme (int index, bool saveSetting);
+    void setEditorColourScheme (int index, bool saveSetting);
+    void updateEditorColourSchemeIfNeeded();
+
+    //==============================================================================
+    void* server = nullptr;
+
+    std::unique_ptr<LatestVersionChecker> versionChecker;
+    TooltipWindow tooltipWindow;
+
+    AvailableModuleList jucePathModuleList, userPathsModuleList;
+
+    int numExamples = 0;
+    std::unique_ptr<AlertWindow> demoRunnerAlert;
+    std::unique_ptr<AlertWindow> pathAlert;
+    bool hasScannedForDemoRunnerExecutable = false, hasScannedForDemoRunnerProject = false;
+    File lastJUCEPath, lastDemoRunnerExectuableFile, lastDemoRunnerProjectFile;
+   #if JUCE_LINUX
+    ChildProcess makeProcess;
+   #endif
+
+    int selectedColourSchemeIndex = 0, selectedEditorColourSchemeIndex = 0, numEditorColourSchemes = 0;
+
+    //==============================================================================
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProjucerApplication)
 };
-
-
-#endif   // JUCER_APPLICATION_H_INCLUDED

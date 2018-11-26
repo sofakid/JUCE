@@ -2,39 +2,40 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2015 - ROLI Ltd.
+   Copyright (c) 2017 - ROLI Ltd.
 
-   Permission is granted to use this software under the terms of either:
-   a) the GPL v2 (or any later version)
-   b) the Affero GPL v3
+   JUCE is an open source library subject to commercial or open-source
+   licensing.
 
-   Details of these licenses can be found at: www.gnu.org/licenses
+   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
+   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
+   27th April 2017).
 
-   JUCE is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-   A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+   End User License Agreement: www.juce.com/juce-5-licence
+   Privacy Policy: www.juce.com/juce-5-privacy-policy
 
-   ------------------------------------------------------------------------------
+   Or: You may also use this code under the terms of the GPL v3 (see
+   www.gnu.org/licenses).
 
-   To release a closed-source product which uses JUCE, commercial licenses are
-   available: visit www.juce.com for more information.
+   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
+   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
+   DISCLAIMED.
 
   ==============================================================================
 */
 
-#include "../jucer_Headers.h"
+#include "../Application/jucer_Headers.h"
 #include "jucer_Application.h"
 #include "jucer_MainWindow.h"
-#include "jucer_OpenDocumentManager.h"
-#include "../Code Editor/jucer_SourceCodeEditor.h"
 #include "../Wizards/jucer_NewProjectWizardClasses.h"
-#include "../Utility/jucer_JucerTreeViewBase.h"
-
+#include "../Utility/UI/jucer_JucerTreeViewBase.h"
+#include "../ProjectSaving/jucer_ProjectSaver.h"
 
 //==============================================================================
 MainWindow::MainWindow()
     : DocumentWindow (ProjucerApplication::getApp().getApplicationName(),
-                      Colour::greyLevel (0.6f),
+                      ProjucerApplication::getApp().lookAndFeel.getCurrentColourScheme()
+                                                   .getUIColour (LookAndFeel_V4::ColourScheme::UIColour::windowBackground),
                       DocumentWindow::allButtons,
                       false)
 {
@@ -59,7 +60,7 @@ MainWindow::MainWindow()
     {
         commandManager.getKeyMappings()->resetToDefaultMappings();
 
-        ScopedPointer<XmlElement> keys (getGlobalProperties().getXmlValue ("keyMappings"));
+        std::unique_ptr<XmlElement> keys (getGlobalProperties().getXmlValue ("keyMappings"));
 
         if (keys != nullptr)
             commandManager.getKeyMappings()->restoreFromXml (*keys);
@@ -71,6 +72,8 @@ MainWindow::MainWindow()
     setWantsKeyboardFocus (false);
 
     getLookAndFeel().setColour (ColourSelector::backgroundColourId, Colours::transparentBlack);
+
+    projectNameValue.addListener (this);
 
     setResizeLimits (600, 500, 32000, 32000);
 }
@@ -87,7 +90,7 @@ MainWindow::~MainWindow()
     getGlobalProperties().setValue ("lastMainWindowPos", getWindowStateAsString());
 
     clearContentComponent();
-    currentProject = nullptr;
+    currentProject.reset();
 }
 
 void MainWindow::createProjectContentCompIfNeeded()
@@ -100,12 +103,29 @@ void MainWindow::createProjectContentCompIfNeeded()
     }
 }
 
+void MainWindow::setTitleBarIcon()
+{
+    if (auto* peer = getPeer())
+    {
+        if (currentProject != nullptr)
+        {
+            peer->setRepresentedFile (currentProject->getFile());
+            peer->setIcon (ImageCache::getFromMemory (BinaryData::juce_icon_png, BinaryData::juce_icon_pngSize));
+        }
+        else
+        {
+            peer->setRepresentedFile ({});
+        }
+    }
+}
+
 void MainWindow::makeVisible()
 {
     restoreWindowPosition();
     setVisible (true);
     addToDesktop();  // (must add before restoring size so that fullscreen will work)
     restoreWindowPosition();
+    setTitleBarIcon();
 
     getContentComponent()->grabKeyboardFocus();
 }
@@ -120,28 +140,26 @@ void MainWindow::closeButtonPressed()
     ProjucerApplication::getApp().mainWindowList.closeWindow (this);
 }
 
-bool MainWindow::closeProject (Project* project)
+bool MainWindow::closeProject (Project* project, bool askUserToSave)
 {
-    jassert (project == currentProject && project != nullptr);
+    jassert (project == currentProject.get() && project != nullptr);
 
     if (project == nullptr)
         return true;
 
     project->getStoredProperties().setValue (getProjectWindowPosName(), getWindowStateAsString());
 
-    if (ProjectContentComponent* const pcc = getProjectContentComponent())
+    if (auto* pcc = getProjectContentComponent())
     {
         pcc->saveTreeViewState();
         pcc->saveOpenDocumentList();
         pcc->hideEditor();
     }
 
-    if (! ProjucerApplication::getApp().openDocumentManager.closeAllDocumentsUsingProject (*project, true))
+    if (! ProjucerApplication::getApp().openDocumentManager.closeAllDocumentsUsingProject (*project, askUserToSave))
         return false;
 
-    FileBasedDocument::SaveResult r = project->saveIfNeededAndUserAgrees();
-
-    if (r == FileBasedDocument::savedOk)
+    if (! askUserToSave || (project->saveIfNeededAndUserAgrees() == FileBasedDocument::savedOk))
     {
         setProject (nullptr);
         return true;
@@ -152,15 +170,41 @@ bool MainWindow::closeProject (Project* project)
 
 bool MainWindow::closeCurrentProject()
 {
-    return currentProject == nullptr || closeProject (currentProject);
+    return currentProject == nullptr || closeProject (currentProject.get());
+}
+
+void MainWindow::moveProject (File newProjectFileToOpen)
+{
+    auto openInIDE = currentProject->shouldOpenInIDEAfterSaving();
+
+    closeProject (currentProject.get(), false);
+    openFile (newProjectFileToOpen);
+
+    if (currentProject != nullptr)
+    {
+        ProjucerApplication::getApp().getCommandManager().invokeDirectly (openInIDE ? CommandIDs::saveAndOpenInIDE
+                                                                                    : CommandIDs::saveProject,
+                                                                          false);
+    }
 }
 
 void MainWindow::setProject (Project* newProject)
 {
     createProjectContentCompIfNeeded();
     getProjectContentComponent()->setProject (newProject);
-    currentProject = newProject;
-    getProjectContentComponent()->updateMainWindowTitle();
+    currentProject.reset (newProject);
+
+    if (currentProject != nullptr)
+        projectNameValue.referTo (currentProject->getProjectValue (Ids::name));
+    else
+        projectNameValue.referTo (Value());
+
+    if (newProject != nullptr)
+    {
+        if (auto* peer = getPeer())
+            peer->setRepresentedFile (newProject->getFile());
+    }
+
     ProjucerApplication::getCommandManager().commandStatusChanged();
 }
 
@@ -190,19 +234,19 @@ bool MainWindow::openFile (const File& file)
 
     if (file.hasFileExtension (Project::projectFileExtension))
     {
-        ScopedPointer<Project> newDoc (new Project (file));
+        std::unique_ptr<Project> newDoc (new Project (file));
 
-        Result result (newDoc->loadFrom (file, true));
+        auto result = newDoc->loadFrom (file, true);
 
         if (result.wasOk() && closeCurrentProject())
         {
-            setProject (newDoc);
+            setProject (newDoc.get());
             newDoc.release()->setChangedFlag (false);
 
             jassert (getProjectContentComponent() != nullptr);
             getProjectContentComponent()->reloadLastOpenDocuments();
 
-            if (Project* p = getProject())
+            if (auto* p = getProject())
                 p->updateDeprecatedProjectSettingsInteractively();
 
             return true;
@@ -216,10 +260,146 @@ bool MainWindow::openFile (const File& file)
     return false;
 }
 
+bool MainWindow::tryToOpenPIP (const File& pipFile)
+{
+    PIPGenerator generator (pipFile);
+
+    if (! generator.hasValidPIP())
+        return false;
+
+    auto generatorResult = generator.createJucerFile();
+
+    if (generatorResult != Result::ok())
+    {
+        AlertWindow::showMessageBoxAsync (AlertWindow::WarningIcon,
+                                          "PIP Error.",
+                                          generatorResult.getErrorMessage());
+
+        return false;
+    }
+
+
+    if (! generator.createMainCpp())
+    {
+        AlertWindow::showMessageBoxAsync (AlertWindow::WarningIcon,
+                                          "PIP Error.",
+                                          "Failed to create Main.cpp.");
+
+        return false;
+    }
+
+    if (! ProjucerApplication::getApp().mainWindowList.openFile (generator.getJucerFile()))
+        return false;
+
+    openPIP (generator);
+    return true;
+}
+
+static bool isDivider (const String& line)
+{
+    auto afterIndent = line.trim();
+
+    if (afterIndent.startsWith ("//") && afterIndent.length() > 20)
+    {
+        afterIndent = afterIndent.substring (2);
+
+        if (afterIndent.containsOnly ("=")
+            || afterIndent.containsOnly ("/")
+            || afterIndent.containsOnly ("-"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool isEndOfCommentBlock (const String& line)
+{
+    if (line.contains ("*/"))
+        return true;
+
+    return false;
+}
+
+static int getIndexOfCommentBlockStart (const StringArray& lines, int blockEndIndex)
+{
+    for (int i = blockEndIndex; i >= 0; --i)
+    {
+        if (lines[i].contains ("/*"))
+            return i;
+    }
+
+    return  0;
+}
+
+static int findBestLineToScrollTo (StringArray lines, StringRef className)
+{
+    for (auto line : lines)
+    {
+        if (line.contains ("struct " + className) || line.contains ("class " + className))
+        {
+            auto index = lines.indexOf (line);
+
+            if (isDivider (lines[index - 1]))
+                return index - 1;
+
+            if (isEndOfCommentBlock (lines[index - 1]))
+            {
+                auto blockStartIndex = getIndexOfCommentBlockStart (lines, index - 1);
+
+                if (blockStartIndex > 0 && isDivider (lines [blockStartIndex - 1]))
+                    return blockStartIndex - 1;
+
+                return blockStartIndex;
+            }
+
+            return lines.indexOf (line);
+        }
+    }
+
+    return 0;
+}
+
+void MainWindow::openPIP (PIPGenerator& generator)
+{
+    if (auto* window = ProjucerApplication::getApp().mainWindowList.getMainWindowForFile (generator.getJucerFile()))
+    {
+        if (auto* project = window->getProject())
+        {
+            project->setTemporaryDirectory (generator.getOutputDirectory());
+
+            ProjectSaver liveBuildSaver (*project, project->getFile());
+            liveBuildSaver.saveContentNeededForLiveBuild();
+
+            if (auto* pcc = window->getProjectContentComponent())
+            {
+                pcc->invokeDirectly (CommandIDs::toggleBuildEnabled, true);
+                pcc->invokeDirectly (CommandIDs::buildNow, true);
+                pcc->invokeDirectly (CommandIDs::toggleContinuousBuild, true);
+
+                auto fileToDisplay = generator.getPIPFile();
+
+                if (fileToDisplay != File())
+                {
+                    pcc->showEditorForFile (fileToDisplay, true);
+
+                    if (auto* sourceCodeEditor = dynamic_cast <SourceCodeEditor*> (pcc->getEditorComponent()))
+                    {
+                        sourceCodeEditor->editor->scrollToLine (findBestLineToScrollTo (StringArray::fromLines (fileToDisplay.loadFileAsString()),
+                                                                                        generator.getMainClassName()));
+                    }
+                }
+
+            }
+        }
+    }
+}
+
 bool MainWindow::isInterestedInFileDrag (const StringArray& filenames)
 {
-    for (int i = filenames.size(); --i >= 0;)
-        if (canOpenFile (File (filenames[i])))
+    for (auto& filename : filenames)
+        if (canOpenFile (File (filename)))
             return true;
 
     return false;
@@ -227,11 +407,14 @@ bool MainWindow::isInterestedInFileDrag (const StringArray& filenames)
 
 void MainWindow::filesDropped (const StringArray& filenames, int /*mouseX*/, int /*mouseY*/)
 {
-    for (int i = filenames.size(); --i >= 0;)
+    for (auto& filename : filenames)
     {
-        const File f (filenames[i]);
+        const File f (filename);
 
-        if (canOpenFile (f) && openFile (f))
+        if (tryToOpenPIP (f))
+            continue;
+
+        if (! isPIPFile (f) && (canOpenFile (f) && openFile (f)))
             break;
     }
 }
@@ -239,21 +422,21 @@ void MainWindow::filesDropped (const StringArray& filenames, int /*mouseX*/, int
 bool MainWindow::shouldDropFilesWhenDraggedExternally (const DragAndDropTarget::SourceDetails& sourceDetails,
                                                        StringArray& files, bool& canMoveFiles)
 {
-    if (TreeView* tv = dynamic_cast<TreeView*> (sourceDetails.sourceComponent.get()))
+    if (auto* tv = dynamic_cast<TreeView*> (sourceDetails.sourceComponent.get()))
     {
         Array<JucerTreeViewBase*> selected;
 
         for (int i = tv->getNumSelectedItems(); --i >= 0;)
-            if (JucerTreeViewBase* b = dynamic_cast<JucerTreeViewBase*> (tv->getSelectedItem(i)))
+            if (auto* b = dynamic_cast<JucerTreeViewBase*> (tv->getSelectedItem(i)))
                 selected.add (b);
 
-        if (selected.size() > 0)
+        if (! selected.isEmpty())
         {
             for (int i = selected.size(); --i >= 0;)
             {
-                if (JucerTreeViewBase* jtvb = selected.getUnchecked(i))
+                if (auto* jtvb = selected.getUnchecked(i))
                 {
-                    const File f (jtvb->getDraggableFile());
+                    auto f = jtvb->getDraggableFile();
 
                     if (f.existsAsFile())
                         files.add (f.getFullPathName());
@@ -261,7 +444,7 @@ bool MainWindow::shouldDropFilesWhenDraggedExternally (const DragAndDropTarget::
             }
 
             canMoveFiles = false;
-            return files.size() > 0;
+            return ! files.isEmpty();
         }
     }
 
@@ -272,62 +455,65 @@ void MainWindow::activeWindowStatusChanged()
 {
     DocumentWindow::activeWindowStatusChanged();
 
-    if (ProjectContentComponent* const pcc = getProjectContentComponent())
+    if (auto* pcc = getProjectContentComponent())
         pcc->updateMissingFileStatuses();
 
     ProjucerApplication::getApp().openDocumentManager.reloadModifiedFiles();
 
-    if (Project* p = getProject())
+    if (auto* p = getProject())
     {
         if (p->hasProjectBeenModified())
         {
-            const int r = AlertWindow::showOkCancelBox (AlertWindow::QuestionIcon,
-                                                           TRANS ("The .jucer file has been modified since the last save."),
-                                                           TRANS ("Do you want to keep the current project or re-load from disk?"),
-                                                           TRANS ("Keep"),
-                                                           TRANS ("Re-load from disk"));
+            Component::SafePointer<Component> safePointer (this);
 
-            if (r == 0)
+            MessageManager::callAsync ([=] ()
             {
-                File projectFile = p->getFile();
-                setProject (nullptr);
-                openFile (projectFile);
-            }
-            else if (r == 1)
-            {
-                ProjucerApplication::getApp().getCommandManager().invokeDirectly (CommandIDs::saveProject, true);
-            }
+                if (safePointer == nullptr)
+                    return; // bail out if the window has been deleted
+
+                auto result = AlertWindow::showOkCancelBox (AlertWindow::QuestionIcon,
+                                                            TRANS ("The .jucer file has been modified since the last save."),
+                                                            TRANS ("Do you want to keep the current project or re-load from disk?"),
+                                                            TRANS ("Keep"),
+                                                            TRANS ("Re-load from disk"));
+
+                if (safePointer == nullptr)
+                    return;
+
+                if (result == 0)
+                {
+                    if (auto* project = getProject())
+                    {
+                        auto oldTemporaryDirectory = project->getTemporaryDirectory();
+
+                        auto projectFile = project->getFile();
+                        setProject (nullptr);
+                        openFile (projectFile);
+
+                        if (oldTemporaryDirectory != File())
+                            if (auto* newProject = getProject())
+                                newProject->setTemporaryDirectory (oldTemporaryDirectory);
+                    }
+                }
+                else
+                {
+                    ProjucerApplication::getApp().getCommandManager().invokeDirectly (CommandIDs::saveProject, true);
+                }
+            });
         }
     }
 }
 
-void MainWindow::updateTitle (const String& documentName)
-{
-    String name (ProjucerApplication::getApp().getApplicationName());
-
-    if (currentProject != nullptr)
-    {
-        String projectName (currentProject->getDocumentTitle());
-
-        if (currentProject->getFile().getFileNameWithoutExtension() != projectName)
-            projectName = currentProject->getFile().getFileName();
-
-        name << "  -  " << projectName;
-    }
-
-    if (documentName.isNotEmpty())
-        name << "  -  " << documentName;
-
-    setName (name);
-}
-
-void MainWindow::showNewProjectWizard()
+void MainWindow::showStartPage()
 {
     jassert (currentProject == nullptr);
+
     setContentOwned (createNewProjectWizardComponent(), true);
+
     centreWithSize (900, 630);
     setVisible (true);
     addToDesktop();
+
     getContentComponent()->grabKeyboardFocus();
 }
 
@@ -339,7 +525,12 @@ ApplicationCommandTarget* MainWindow::getNextCommandTarget()
 
 void MainWindow::getAllCommands (Array <CommandID>& commands)
 {
-    const CommandID ids[] = { CommandIDs::closeWindow };
+    const CommandID ids[] =
+    {
+        CommandIDs::closeWindow,
+        CommandIDs::goToPreviousWindow,
+        CommandIDs::goToNextWindow
+    };
 
     commands.addArray (ids, numElementsInArray (ids));
 }
@@ -351,6 +542,18 @@ void MainWindow::getCommandInfo (const CommandID commandID, ApplicationCommandIn
         case CommandIDs::closeWindow:
             result.setInfo ("Close Window", "Closes the current window", CommandCategories::general, 0);
             result.defaultKeypresses.add (KeyPress ('w', ModifierKeys::commandModifier, 0));
+            break;
+
+        case CommandIDs::goToPreviousWindow:
+            result.setInfo ("Previous Window", "Activates the previous window", CommandCategories::general, 0);
+            result.setActive (ProjucerApplication::getApp().mainWindowList.windows.size() > 1);
+            result.defaultKeypresses.add (KeyPress (KeyPress::tabKey, ModifierKeys::shiftModifier | ModifierKeys::ctrlModifier, 0));
+            break;
+
+        case CommandIDs::goToNextWindow:
+            result.setInfo ("Next Window", "Activates the next window", CommandCategories::general, 0);
+            result.setActive (ProjucerApplication::getApp().mainWindowList.windows.size() > 1);
+            result.defaultKeypresses.add (KeyPress (KeyPress::tabKey, ModifierKeys::ctrlModifier, 0));
             break;
 
         default:
@@ -366,6 +569,14 @@ bool MainWindow::perform (const InvocationInfo& info)
             closeButtonPressed();
             break;
 
+        case CommandIDs::goToPreviousWindow:
+            ProjucerApplication::getApp().mainWindowList.goToSiblingWindow (this, -1);
+            break;
+
+        case CommandIDs::goToNextWindow:
+            ProjucerApplication::getApp().mainWindowList.goToSiblingWindow (this, 1);
+            break;
+
         default:
             return false;
     }
@@ -373,6 +584,13 @@ bool MainWindow::perform (const InvocationInfo& info)
     return true;
 }
 
+void MainWindow::valueChanged (Value&)
+{
+    if (currentProject != nullptr)
+        setName (currentProject->getProjectNameString() + " - Projucer");
+    else
+        setName ("Projucer");
+}
 
 //==============================================================================
 MainWindowList::MainWindowList()
@@ -402,7 +620,7 @@ bool MainWindowList::askAllWindowsToClose()
 void MainWindowList::createWindowIfNoneAreOpen()
 {
     if (windows.size() == 0)
-        createNewMainWindow()->showNewProjectWizard();
+        createNewMainWindow()->showStartPage();
 }
 
 void MainWindowList::closeWindow (MainWindow* w)
@@ -410,7 +628,7 @@ void MainWindowList::closeWindow (MainWindow* w)
     jassert (windows.contains (w));
 
    #if ! JUCE_MAC
-    if (windows.size() == 1)
+    if (windows.size() == 1 && ! isInReopenLastProjects)
     {
         JUCEApplicationBase::getInstance()->systemRequestedQuit();
     }
@@ -425,15 +643,24 @@ void MainWindowList::closeWindow (MainWindow* w)
     }
 }
 
+void MainWindowList::goToSiblingWindow (MainWindow* w, int delta)
+{
+    auto index = windows.indexOf (w);
+
+    if (index >= 0)
+        if (auto* next = windows[(index + delta + windows.size()) % windows.size()])
+            next->toFront (true);
+}
+
 void MainWindowList::openDocument (OpenDocumentManager::Document* doc, bool grabFocus)
 {
-    Desktop& desktop = Desktop::getInstance();
+    auto& desktop = Desktop::getInstance();
 
     for (int i = desktop.getNumComponents(); --i >= 0;)
     {
-        if (MainWindow* const mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
+        if (auto* mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
         {
-            if (ProjectContentComponent* pcc = mw->getProjectContentComponent())
+            if (auto* pcc = mw->getProjectContentComponent())
             {
                 if (pcc->hasFileInRecentList (doc->getFile()))
                 {
@@ -445,15 +672,13 @@ void MainWindowList::openDocument (OpenDocumentManager::Document* doc, bool grab
         }
     }
 
-    getOrCreateFrontmostWindow()->getProjectContentComponent()->showDocument (doc, grabFocus);
+    getFrontmostWindow()->getProjectContentComponent()->showDocument (doc, grabFocus);
 }
 
-bool MainWindowList::openFile (const File& file)
+bool MainWindowList::openFile (const File& file, bool openInBackground)
 {
-    for (int i = windows.size(); --i >= 0;)
+    for (auto* w : windows)
     {
-        MainWindow* const w = windows.getUnchecked(i);
-
         if (w->getProject() != nullptr && w->getProject()->getFile() == file)
         {
             w->toFront (true);
@@ -463,43 +688,64 @@ bool MainWindowList::openFile (const File& file)
 
     if (file.hasFileExtension (Project::projectFileExtension))
     {
-        MainWindow* const w = getOrCreateEmptyWindow();
+        WeakReference<Component> previousFrontWindow (getFrontmostWindow());
+
+        auto* w = getOrCreateEmptyWindow();
         bool ok = w->openFile (file);
 
-        w->makeVisible();
-        avoidSuperimposedWindows (w);
+        if (ok)
+        {
+            w->makeVisible();
+            avoidSuperimposedWindows (w);
+        }
+        else
+        {
+            closeWindow (w);
+        }
+
+        if (openInBackground && previousFrontWindow != nullptr)
+            previousFrontWindow->toFront (true);
 
         return ok;
     }
 
-    if (file.exists())
-        return getOrCreateFrontmostWindow()->openFile (file);
+    if (getFrontmostWindow()->tryToOpenPIP (file))
+        return true;
+
+    if (! isPIPFile (file) && file.exists())
+        return getFrontmostWindow()->openFile (file);
 
     return false;
 }
 
 MainWindow* MainWindowList::createNewMainWindow()
 {
-    MainWindow* const w = new MainWindow();
+    auto w = new MainWindow();
     windows.add (w);
     w->restoreWindowPosition();
     avoidSuperimposedWindows (w);
     return w;
 }
 
-MainWindow* MainWindowList::getOrCreateFrontmostWindow()
+MainWindow* MainWindowList::getFrontmostWindow (bool createIfNotFound)
 {
-    if (windows.size() == 0)
+    if (windows.isEmpty())
     {
-        MainWindow* w = createNewMainWindow();
-        avoidSuperimposedWindows (w);
-        w->makeVisible();
-        return w;
+        if (createIfNotFound)
+        {
+            auto* w = createNewMainWindow();
+            avoidSuperimposedWindows (w);
+            w->makeVisible();
+            return w;
+        }
+
+        return nullptr;
     }
 
     for (int i = Desktop::getInstance().getNumComponents(); --i >= 0;)
     {
-        MainWindow* mw = dynamic_cast<MainWindow*> (Desktop::getInstance().getComponent (i));
+        auto* mw = dynamic_cast<MainWindow*> (Desktop::getInstance().getComponent (i));
+
         if (windows.contains (mw))
             return mw;
     }
@@ -514,7 +760,8 @@ MainWindow* MainWindowList::getOrCreateEmptyWindow()
 
     for (int i = Desktop::getInstance().getNumComponents(); --i >= 0;)
     {
-        MainWindow* mw = dynamic_cast<MainWindow*> (Desktop::getInstance().getComponent (i));
+        auto* mw = dynamic_cast<MainWindow*> (Desktop::getInstance().getComponent (i));
+
         if (windows.contains (mw) && mw->getProject() == nullptr)
             return mw;
     }
@@ -522,21 +769,31 @@ MainWindow* MainWindowList::getOrCreateEmptyWindow()
     return createNewMainWindow();
 }
 
-void MainWindowList::updateAllWindowTitles()
+MainWindow* MainWindowList::getMainWindowForFile (const File& file)
 {
-    for (int i = 0; i < windows.size(); ++i)
-        if (ProjectContentComponent* pc = windows.getUnchecked(i)->getProjectContentComponent())
-            pc->updateMainWindowTitle();
+    if (windows.size() > 0)
+    {
+        for (auto* window : windows)
+        {
+            if (auto* project = window->getProject())
+            {
+                if (project->getFile() == file)
+                    return window;
+            }
+        }
+    }
+
+    return nullptr;
 }
 
 void MainWindowList::avoidSuperimposedWindows (MainWindow* const mw)
 {
     for (int i = windows.size(); --i >= 0;)
     {
-        MainWindow* const other = windows.getUnchecked(i);
+        auto* other = windows.getUnchecked(i);
 
-        const Rectangle<int> b1 (mw->getBounds());
-        const Rectangle<int> b2 (other->getBounds());
+        auto b1 = mw->getBounds();
+        auto b2 = other->getBounds();
 
         if (mw != other
              && std::abs (b1.getX() - b2.getX()) < 3
@@ -557,13 +814,14 @@ void MainWindowList::avoidSuperimposedWindows (MainWindow* const mw)
 void MainWindowList::saveCurrentlyOpenProjectList()
 {
     Array<File> projects;
-    Desktop& desktop = Desktop::getInstance();
+    auto& desktop = Desktop::getInstance();
 
     for (int i = 0; i < desktop.getNumComponents(); ++i)
     {
-        if (MainWindow* const mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
-            if (Project* p = mw->getProject())
-                projects.add (p->getFile());
+        if (auto* mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
+            if (auto* p = mw->getProject())
+                if (! p->isTemporaryProject())
+                    projects.add (p->getFile());
     }
 
     getAppSettings().setLastProjects (projects);
@@ -571,62 +829,26 @@ void MainWindowList::saveCurrentlyOpenProjectList()
 
 void MainWindowList::reopenLastProjects()
 {
-    Array<File> projects (getAppSettings().getLastProjects());
+    const ScopedValueSetter<bool> setter (isInReopenLastProjects, true);
 
-    for (int i = 0; i < projects.size(); ++ i)
-        openFile (projects.getReference(i));
+    for (auto& p : getAppSettings().getLastProjects())
+        openFile (p, true);
 }
 
 void MainWindowList::sendLookAndFeelChange()
 {
-    for (int i = windows.size(); --i >= 0;)
-        windows.getUnchecked(i)->sendLookAndFeelChange();
+    for (auto* w : windows)
+        w->sendLookAndFeelChange();
 }
 
 Project* MainWindowList::getFrontmostProject()
 {
-    Desktop& desktop = Desktop::getInstance();
+    auto& desktop = Desktop::getInstance();
 
     for (int i = desktop.getNumComponents(); --i >= 0;)
-        if (MainWindow* const mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
-            if (Project* p = mw->getProject())
+        if (auto* mw = dynamic_cast<MainWindow*> (desktop.getComponent(i)))
+            if (auto* p = mw->getProject())
                 return p;
 
     return nullptr;
-}
-
-File findDefaultModulesFolder (bool mustContainJuceCoreModule)
-{
-    const MainWindowList& windows = ProjucerApplication::getApp().mainWindowList;
-
-    for (int i = windows.windows.size(); --i >= 0;)
-    {
-        if (Project* p = windows.windows.getUnchecked (i)->getProject())
-        {
-            const File f (EnabledModuleList::findDefaultModulesFolder (*p));
-
-            if (isJuceModulesFolder (f) || (f.isDirectory() && ! mustContainJuceCoreModule))
-                return f;
-        }
-    }
-
-    if (mustContainJuceCoreModule)
-        return findDefaultModulesFolder (false);
-
-    File f (File::getSpecialLocation (File::currentApplicationFile));
-
-    for (;;)
-    {
-        File parent (f.getParentDirectory());
-
-        if (parent == f || ! parent.isDirectory())
-            break;
-
-        if (isJuceFolder (parent))
-            return parent.getChildFile ("modules");
-
-        f = parent;
-    }
-
-    return File();
 }

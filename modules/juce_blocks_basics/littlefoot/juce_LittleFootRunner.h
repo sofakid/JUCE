@@ -2,28 +2,20 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2016 - ROLI Ltd.
+   Copyright (c) 2017 - ROLI Ltd.
 
-   Permission is granted to use this software under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license/
+   JUCE is an open source library subject to commercial or open-source
+   licensing.
 
-   Permission to use, copy, modify, and/or distribute this software for any
-   purpose with or without fee is hereby granted, provided that the above
-   copyright notice and this permission notice appear in all copies.
+   The code included in this file is provided under the terms of the ISC license
+   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
+   To use, copy, modify, and/or distribute this software for any purpose with or
+   without fee is hereby granted provided that the above copyright notice and
+   this permission notice appear in all copies.
 
-   THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD
-   TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
-   FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT,
-   OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF
-   USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
-   TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
-   OF THIS SOFTWARE.
-
-   -----------------------------------------------------------------------------
-
-   To release a closed-source product which uses other parts of JUCE not
-   licensed under the ISC terms, commercial licenses are available: visit
-   www.juce.com for more information.
+   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
+   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
+   DISCLAIMED.
 
   ==============================================================================
 */
@@ -44,11 +36,11 @@ namespace littlefoot
  #define LITTLEFOOT_DUMP_PROGRAM 0
 #endif
 
-using int8        = char;
+using int8        = signed char;
 using uint8       = unsigned char;
-using int16       = short;
+using int16       = signed short;
 using uint16      = unsigned short;
-using int32       = int;
+using int32       = signed int;
 using uint32      = unsigned int;
 using FunctionID  = int16;
 
@@ -138,8 +130,13 @@ enum class Type  : uint8
     float_  = 'f'
 };
 
+const int numBytesInType = 4;
+
 //==============================================================================
-/** Defines a native function that the program can call. */
+/** Defines a native function that the program can call.
+
+    @tags{Blocks}
+*/
 struct NativeFunction
 {
     using ImplementationFunction = int32 (*) (void*, const int32*);
@@ -148,11 +145,11 @@ struct NativeFunction
         The format of nameAndArgumentTypes is "name/[return type][arg1][arg2..]"
         So for example "int foobar (float, bool)" would be "foobar/ifb"
     */
-    NativeFunction (const char* nameAndArgumentTypes, ImplementationFunction fn) noexcept
+    NativeFunction (const char* nameAndArgumentTypes, ImplementationFunction fn)
         : nameAndArguments (nameAndArgumentTypes), function (fn),
           functionID (createID (nameAndArgumentTypes)), returnType(), numArgs()
     {
-        const int slash = indexOfSlash (nameAndArgumentTypes);
+        auto slash = indexOfSlash (nameAndArgumentTypes);
 
         if (slash > 0)
         {
@@ -170,22 +167,22 @@ struct NativeFunction
     uint8 numArgs;                      /**< The number of arguments that the function takes. */
 
     /** Converts a function signature to its hashed ID. */
-    static FunctionID createID (const char* nameAndArgTypes) noexcept
+    static FunctionID createID (const char* nameAndArgTypes)
     {
-        jassert (nameAndArgTypes != nullptr && nameAndArgTypes[0] != 0); // the name cannot be an empty string!
-        int hash = 0, i = 0;
-        const int slash = indexOfSlash (nameAndArgTypes);
+        auto slash = indexOfSlash (nameAndArgTypes);
 
         jassert (slash > 0); // The slash can't be the first character in this string!
         jassert (nameAndArgTypes[slash + 1] != 0);  // The slash must be followed by a return type character
         jassert (juce::String (nameAndArgTypes).substring (0, slash).containsOnly ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"));
         jassert (! juce::String ("0123456789").containsChar (nameAndArgTypes[0]));
-        jassert (juce::String (nameAndArgTypes).substring (slash + 1).containsOnly ("vif"));
-        jassert (juce::String (nameAndArgTypes).substring (slash + 2).containsOnly ("if")); // arguments must only be of these types
+        jassert (juce::String (nameAndArgTypes).substring (slash + 1).containsOnly ("vifb"));
+        jassert (juce::String (nameAndArgTypes).substring (slash + 2).containsOnly ("ifb")); // arguments must only be of these types
+
+        uint32 hash = 0, i = 0;
 
         for (; nameAndArgTypes[i] != 0; ++i)
-            if (i != slash + 1)
-                hash = hash * 31 + nameAndArgTypes[i];
+            if (i != (uint32) (slash + 1))
+                hash = hash * 31u + (uint32) nameAndArgTypes[i];
 
         return static_cast<FunctionID> (hash + i);
     }
@@ -193,6 +190,8 @@ struct NativeFunction
 private:
     static int indexOfSlash (const char* nameAndArgs) noexcept
     {
+        jassert (nameAndArgs != nullptr && nameAndArgs[0] != 0); // the name cannot be an empty string!
+
         for (int i = 0; nameAndArgs[i] != 0; ++i)
             if (nameAndArgs[i] == '/')
                 return i;
@@ -217,6 +216,8 @@ private:
       2 bytes - byte offset of function 2 code
                 etc..
       ...function code...
+
+    @tags{Blocks}
 */
 struct Program
 {
@@ -234,7 +235,7 @@ struct Program
     uint16 calculateChecksum() const noexcept
     {
         auto size = getProgramSize();
-        uint16 n = (uint16) size;
+        auto n = (uint16) size;
 
         for (uint32 i = 2; i < size; ++i)
             n += (n * 2) + programStart[i];
@@ -245,13 +246,6 @@ struct Program
     bool checksumMatches() const noexcept
     {
         return calculateChecksum() == getStoredChecksum();
-    }
-
-    uint32 getProgramSize() const noexcept
-    {
-        auto size = (uint16) readInt16 (programStart + 2);
-        return size < programHeaderSize ? programHeaderSize
-                                        : (size > maxProgramSize ? maxProgramSize : size);
     }
 
     uint32 getNumFunctions() const noexcept
@@ -286,16 +280,28 @@ struct Program
                                                     : getFunctionStartAddress (functionIndex);
     }
 
-    /** Returns the number of global variables the program uses */
-    uint16 getNumGlobals() const noexcept
+    uint32 getProgramSize() const noexcept
     {
-        return (uint16) readInt16 (programStart + 6);
+        auto size = (uint16) readInt16 (programStart + 2);
+        return size < programHeaderSize ? programHeaderSize
+                                        : (size > maxProgramSize ? maxProgramSize : size);
     }
 
     /** Returns the number of bytes of heap space the program needs */
     uint16 getHeapSizeBytes() const noexcept
     {
         return (uint16) readInt16 (programStart + 8);
+    }
+
+    /** Returns the number of global variables the program uses */
+    uint16 getNumGlobals() const noexcept
+    {
+        return (uint16) readInt16 (programStart + 6);
+    }
+
+    uint32 getTotalSpaceNeeded() const noexcept
+    {
+        return getProgramSize() + getHeapSizeBytes();
     }
 
    #if JUCE_DEBUG
@@ -307,7 +313,7 @@ struct Program
             << "  (" << juce::String::toHexString (getFunctionID (functionIndex)) << ")" << juce::newLine;
 
         if (auto codeStart = getFunctionStartAddress (functionIndex))
-            if (auto codeEnd   = getFunctionEndAddress (functionIndex))
+            if (auto codeEnd = getFunctionEndAddress (functionIndex))
                 for (auto prog = codeStart; prog < codeEnd;)
                     out << getOpDisassembly (prog) << juce::newLine;
     }
@@ -339,26 +345,48 @@ struct Program
     /** Calls dumpFunctionDisassembly() for all functions. */
     void dumpAllFunctions (juce::OutputStream& out) const
     {
-        DBG ("Program size: " << (int) getProgramSize() << " bytes");
+        if (programStart != nullptr)
+        {
+            DBG ("Program size: " << (int) getProgramSize() << " bytes");
 
-        for (uint32 i = 0; i < getNumFunctions(); ++i)
-            dumpFunctionDisassembly (out, i);
+            for (uint32 i = 0; i < getNumFunctions(); ++i)
+                dumpFunctionDisassembly (out, i);
+        }
     }
    #endif
+
+    /** For a given op code, this returns the number of program bytes that follow it. */
+    static uint8 getNumExtraBytesForOpcode (OpCode op) noexcept
+    {
+        switch (op)
+        {
+           #define LITTLEFOOT_OP(name)         case OpCode::name:  return 0;
+           #define LITTLEFOOT_OP_INT8(name)    case OpCode::name:  return 1;
+           #define LITTLEFOOT_OP_INT16(name)   case OpCode::name:  return 2;
+           #define LITTLEFOOT_OP_INT32(name)   case OpCode::name:  return 4;
+            LITTLEFOOT_OPCODES (LITTLEFOOT_OP, LITTLEFOOT_OP_INT8, LITTLEFOOT_OP_INT16, LITTLEFOOT_OP_INT32)
+           #undef LITTLEFOOT_OP
+           #undef LITTLEFOOT_OP_INT8
+           #undef LITTLEFOOT_OP_INT16
+           #undef LITTLEFOOT_OP_INT32
+
+            default:  jassertfalse; return 0;
+        }
+    }
 
     //==============================================================================
     static float intToFloat (int32 value) noexcept          { float v; copyFloatMem (&v, &value); return v; }
     static int32 floatToInt (float value) noexcept          { int32 v; copyFloatMem (&v, &value); return v; }
 
-    static int16 readInt16 (const uint8* d) noexcept        { return (int16) (d[0] + (((uint16) d[1]) << 8)); }
-    static int32 readInt32 (const uint8* d) noexcept        { return (int32) ((uint32) (uint16) readInt16 (d) + (((uint32) (uint16) readInt16 (d + 2)) << 16)); }
+    static int16 readInt16 (const uint8* d) noexcept        { return (int16) (d[0] | (((uint16) d[1]) << 8)); }
+    static int32 readInt32 (const uint8* d) noexcept        { return (int32) (d[0] | (((uint32) d[1]) << 8) | (((uint32) d[2]) << 16) | (((uint32) d[3]) << 24)); }
 
     static void writeInt16 (uint8* d, int16 v) noexcept     { d[0] = (uint8) v; d[1] = (uint8) (v >> 8); }
     static void writeInt32 (uint8* d, int32 v) noexcept     { d[0] = (uint8) v; d[1] = (uint8) (v >> 8); d[2] = (uint8) (v >> 16); d[3] = (uint8) (v >> 24); }
 
     //==============================================================================
     static constexpr uint32 programHeaderSize = 10;
-    const uint8* programStart = 0;
+    const uint8* programStart = nullptr;
     const uint32 maxProgramSize;
 
 private:
@@ -387,6 +415,8 @@ private:
     Program code goes at address 0, followed by any shared data the program needs
     globals are at the top end of the buffer
     stack space stretches downwards from the start of the globals
+
+    @tags{Blocks}
 */
 template <int programAndHeapSpace, int stackAndGlobalsSpace>
 struct Runner
@@ -416,6 +446,16 @@ struct Runner
             allMemory[i] = 0;
     }
 
+    /** Clears all the non-program data. */
+    void clearHeapAndGlobals() noexcept
+    {
+        auto* start = getProgramAndDataStart() + program.getProgramSize();
+        auto* end = allMemory + sizeof (allMemory);
+
+        for (auto m = start; m < end; ++m)
+            *m = 0;
+    }
+
     /** Return codes from a function call */
     enum class ErrorCode  : uint8
     {
@@ -428,6 +468,23 @@ struct Runner
         divisionByZero,
         unknownFunction
     };
+
+    /** Returns a text description for an error code */
+    static const char* getErrorDescription (ErrorCode e) noexcept
+    {
+        switch (e)
+        {
+            case ErrorCode::ok:                    return "OK";
+            case ErrorCode::executionTimedOut:     return "Timed-out";
+            case ErrorCode::unknownInstruction:    return "Illegal instruction";
+            case ErrorCode::stackOverflow:         return "Stack overflow";
+            case ErrorCode::stackUnderflow:        return "Stack underflow";
+            case ErrorCode::illegalAddress:        return "Illegal access";
+            case ErrorCode::divisionByZero:        return "Division by zero";
+            case ErrorCode::unknownFunction:       return "Unknown function";
+            default:                               return "Unknown error";
+        }
+    }
 
     /** Calls one of the functions in the program, by its textual signature. */
     ErrorCode callFunction (const char* functionSignature) noexcept
@@ -467,15 +524,17 @@ struct Runner
     /** */
     bool isProgramValid() const noexcept                { return heapStart != nullptr; }
 
-    /** */
+    /** Sets a byte of data. */
     void setDataByte (uint32 index, uint8 value) noexcept
     {
         if (index < programAndHeapSpace)
         {
-            if (index < program.getProgramSize())
+            auto& dest = getProgramAndDataStart()[index];
+
+            if (index < program.getProgramSize() && dest != value)
                 heapStart = nullptr; // force a re-initialise of the memory layout when the program changes
 
-            getProgramAndDataStart()[index] = value;
+            dest = value;
         }
     }
 
@@ -561,7 +620,7 @@ struct Runner
                     if (prog.getFunctionID (i) == function)
                     {
                         programCounter  = prog.getFunctionStartAddress (i);
-                        functionEnd     = prog.getFunctionEndAddress (i);
+                        programEnd      = r.getProgramHeapStart();
                         tos             = *--stack = 0;
                         return;
                     }
@@ -599,7 +658,7 @@ struct Runner
 
             for (;;)
             {
-                if (programCounter >= functionEnd)
+                if (programCounter >= programEnd)
                     return error;
 
                 if ((++opsPerformed & 63) == 0 && hasTimedOut())
@@ -628,7 +687,7 @@ struct Runner
         //==============================================================================
         Runner* runner;
         const uint8* programCounter;
-        const uint8* functionEnd;
+        const uint8* programEnd;
         const uint8* programBase;
         uint8* heapStart;
         int32* stack;
@@ -646,7 +705,7 @@ struct Runner
         int16 readProgram16() noexcept              { auto v = Program::readInt16 (programCounter); programCounter += sizeof (int16); return v; }
         int32 readProgram32() noexcept              { auto v = Program::readInt32 (programCounter); programCounter += sizeof (int32); return v; }
 
-        void setError (ErrorCode e) noexcept        { error = e; programCounter = functionEnd; jassert (error == ErrorCode::ok); }
+        void setError (ErrorCode e) noexcept        { error = e; programCounter = programEnd; jassert (error == ErrorCode::ok); }
 
         bool checkStackUnderflow() noexcept         { if (stack <= stackEnd) return true; setError (ErrorCode::stackUnderflow); return false; }
         bool flushTopToStack() noexcept             { if (--stack < stackStart) { setError (ErrorCode::stackOverflow); return false; } *stack = tos; return true; }

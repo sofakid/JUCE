@@ -2,28 +2,30 @@
   ==============================================================================
 
    This file is part of the JUCE library.
-   Copyright (c) 2015 - ROLI Ltd.
+   Copyright (c) 2017 - ROLI Ltd.
 
-   Permission is granted to use this software under the terms of either:
-   a) the GPL v2 (or any later version)
-   b) the Affero GPL v3
+   JUCE is an open source library subject to commercial or open-source
+   licensing.
 
-   Details of these licenses can be found at: www.gnu.org/licenses
+   By using JUCE, you agree to the terms of both the JUCE 5 End-User License
+   Agreement and JUCE 5 Privacy Policy (both updated and effective as of the
+   27th April 2017).
 
-   JUCE is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-   A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+   End User License Agreement: www.juce.com/juce-5-licence
+   Privacy Policy: www.juce.com/juce-5-privacy-policy
 
-   ------------------------------------------------------------------------------
+   Or: You may also use this code under the terms of the GPL v3 (see
+   www.gnu.org/licenses).
 
-   To release a closed-source product which uses JUCE, commercial licenses are
-   available: visit www.juce.com for more information.
+   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
+   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
+   DISCLAIMED.
 
   ==============================================================================
 */
 
-#ifndef JUCER_TEMPLATETHUMBNAILSCOMPONENT_H_INCLUDED
-#define JUCER_TEMPLATETHUMBNAILSCOMPONENT_H_INCLUDED
+#pragma once
+
 
 //==============================================================================
 /**
@@ -37,16 +39,14 @@ public:
        : DrawableButton (buttonName, buttonStyle)
     {
         // svg for thumbnail icon
-        ScopedPointer<XmlElement> svg (XmlDocument::parse (thumbSvg));
+        auto svg = parseXML (thumbSvg);
         jassert (svg != nullptr);
-
-        thumb = Drawable::createFromSVG (*svg);
+        thumb.reset (Drawable::createFromSVG (*svg));
 
         // svg for thumbnail background highlight
-        ScopedPointer<XmlElement> backSvg (XmlDocument::parse (BinaryData::wizard_Highlight_svg));
+        auto backSvg = parseXML (BinaryData::wizard_Highlight_svg);
         jassert (backSvg != nullptr);
-
-        hoverBackground = Drawable::createFromSVG (*backSvg);
+        hoverBackground.reset (Drawable::createFromSVG (*backSvg));
 
         name = buttonName;
 
@@ -56,7 +56,7 @@ public:
     void paintButton (Graphics& g, bool isMouseOverButton, bool /*isButtonDown*/) override
     {
         const Rectangle<float> r (getLocalBounds().toFloat());
-        const Colour buttonColour (0xfff29300);
+        const Colour buttonColour (0xffA35E93);
 
         if (isMouseOverButton)
         {
@@ -99,13 +99,13 @@ public:
             textTarget = textTarget.removeFromBottom (textTarget.getHeight() * 0.3f);
         }
 
-        g.setColour (findColour (mainBackgroundColourId).contrasting());
+        g.setColour (findColour (defaultTextColourId));
         g.drawText (name, textTarget, Justification::centred, true);
     }
 
     void resized() override
     {
-        thumb->setBoundsToFit (0, 0, getWidth(), getHeight(), Justification::centred, false);
+        thumb->setBoundsToFit (getLocalBounds(), Justification::centred, false);
     }
 
     void setDescription (String descript) noexcept
@@ -119,7 +119,15 @@ public:
     }
 
 private:
-    ScopedPointer<Drawable> thumb, hoverBackground;
+    void clicked() override
+    {
+        StringPairArray data;
+        data.set ("label", getName());
+
+        Analytics::getInstance()->logEvent ("Start Page Button", data, ProjucerAnalyticsEvent::startPageEvent);
+    }
+
+    std::unique_ptr<Drawable> thumb, hoverBackground;
     String name, description;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TemplateOptionButton)
@@ -132,8 +140,7 @@ private:
     Project Template Component for front page.
     Features multiple icon buttons to select the type of project template
 */
-class TemplateTileBrowser   : public Component,
-                              private Button::Listener
+class TemplateTileBrowser   : public Component
 {
 public:
     TemplateTileBrowser (WizardComp* projectWizard)
@@ -142,7 +149,7 @@ public:
 
         for (int i = 0; i < numWizardButtons; ++i)
         {
-            ScopedPointer<NewProjectWizard> wizard (createWizardType (i));
+            auto wizard = createWizardType (i);
 
             TemplateOptionButton* b = new TemplateOptionButton (wizard->getName(),
                                                                 TemplateOptionButton::ImageFitted,
@@ -150,70 +157,77 @@ public:
             optionButtons.add (b);
             addAndMakeVisible (b);
             b->setDescription (wizard->getDescription());
-            b->addListener (this);
+            b->onClick = [this, b] { showWizardButton (b); };
+            b->onStateChange = [this] { repaint(); };
         }
 
         // Handle Open Project button functionality
         ApplicationCommandManager& commandManager = ProjucerApplication::getCommandManager();
 
-        addAndMakeVisible (blankProjectButton   = new TemplateOptionButton ("Create Blank Project",  TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg));
-        addAndMakeVisible (exampleProjectButton = new TemplateOptionButton ("Open Example Project",  TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg));
-        addAndMakeVisible (openProjectButton    = new TemplateOptionButton ("Open Existing Project", TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg));
+        addAndMakeVisible (blankProjectButton);
+        addAndMakeVisible (openProjectButton);
+        addAndMakeVisible (browseDemosButton);
+        addAndMakeVisible (viewTutorialsButton);
 
-        blankProjectButton->addListener (this);
-        exampleProjectButton->addListener (this);
-        openProjectButton->setCommandToTrigger (&commandManager, CommandIDs::open, true);
+        blankProjectButton.onClick   = [this] { createBlankProject(); };
+        openProjectButton.setCommandToTrigger (&commandManager, CommandIDs::open, true);
+        browseDemosButton.setCommandToTrigger (&commandManager, CommandIDs::launchDemoRunner, true);
+        viewTutorialsButton.setCommandToTrigger (&commandManager, CommandIDs::showTutorials, true);
 
         newProjectWizard = projectWizard;
     }
 
     void paint (Graphics& g) override
     {
-        g.setColour (Colours::black.withAlpha (0.2f));
+        g.setColour (findColour (contentHeaderBackgroundColourId));
         g.fillRect (getLocalBounds().removeFromTop (60));
 
         g.setColour (Colours::white);
         g.setFont (20.0f);
         g.drawText ("Create New Project", 0, 0, getWidth(), 60, Justification::centred, true);
 
-        // draw the descriptions of each template if hovered;
-        // (repaint is called by the button listener on change state)
-        Rectangle<int> descriptionBox (getLocalBounds().reduced (30).removeFromBottom (50));
+        auto descriptionBox = (getLocalBounds().reduced (30).removeFromBottom (50));
 
-        g.setColour (Colours::white.withAlpha (0.4f));
+        g.setColour (findColour (defaultTextColourId));
         g.setFont (15.0f);
 
         for (int i = 0; i < optionButtons.size(); ++i)
             if (optionButtons.getUnchecked(i)->isOver())
-                g.drawFittedText (optionButtons.getUnchecked(i)->getDescription(), descriptionBox, Justification::centred, 5, 1.0f);
+                g.drawFittedText (optionButtons.getUnchecked(i)->getDescription(), descriptionBox, Justification::centredBottom, 5, 1.0f);
     }
 
     void resized() override
     {
-        Rectangle<int> allOpts = getLocalBounds().reduced (40, 60);
-        allOpts.removeFromBottom (allOpts.getHeight() / 4);
+        auto bounds = getLocalBounds().reduced (40, 0);
+        bounds.removeFromTop (60);
 
-        const int numHorizIcons = 4;
-        const int optStep = allOpts.getWidth() / numHorizIcons;
-
-        for (int i = 0; i < optionButtons.size(); ++i)
         {
-            const int yShift = i < numHorizIcons ? 0 : 1;
+            auto optionBounds = bounds.removeFromTop (roundToInt (bounds.getHeight() * 0.65f));
 
-            optionButtons.getUnchecked(i)->setBounds (Rectangle<int> (allOpts.getX() + (i % numHorizIcons) * optStep,
-                                                                      allOpts.getY() + yShift * allOpts.getHeight() / 2,
-                                                                      optStep, allOpts.getHeight() / 2)
-                                                        .reduced (10, 10));
+            auto topSlice = optionBounds.removeFromTop (optionBounds.getHeight() / 2).reduced (0, 10);
+            auto bottomSlice = optionBounds.reduced (0, 10);
+
+            const int numHorizontal = 4;
+
+            for (int i = 0; i < optionButtons.size(); ++i)
+            {
+                auto& sliceToUse = (i < numHorizontal ? topSlice : bottomSlice);
+
+                optionButtons.getUnchecked (i)->setBounds (sliceToUse.removeFromLeft (sliceToUse.getWidth() / (4 - (i % 4))).reduced (10, 0));
+            }
         }
 
-        Rectangle<int> openButtonBounds = getLocalBounds();
-        openButtonBounds.removeFromBottom (proportionOfHeight (0.12f));
-        openButtonBounds = openButtonBounds.removeFromBottom (120);
-        openButtonBounds.reduce (50, 40);
+        bounds.removeFromTop (20);
+        auto topButtonBounds = bounds.removeFromTop (50);
 
-        blankProjectButton->setBounds (openButtonBounds.removeFromLeft (optStep - 20));
-        exampleProjectButton->setBounds (openButtonBounds.removeFromRight (optStep - 20));
-        openProjectButton->setBounds (openButtonBounds.reduced (18, 0));
+        openProjectButton.setBounds (topButtonBounds.reduced (80, 0));
+
+        bounds.removeFromTop (10);
+        auto bottomButtonBounds = bounds.removeFromTop (35);
+
+        blankProjectButton.setBounds  (bottomButtonBounds.removeFromLeft (bottomButtonBounds.getWidth() / 3).reduced (10, 0));
+        browseDemosButton.setBounds   (bottomButtonBounds.removeFromLeft (bottomButtonBounds.getWidth() / 2).reduced (10, 0));
+        viewTutorialsButton.setBounds (bottomButtonBounds.removeFromLeft (bottomButtonBounds.getWidth()).reduced (10, 0));
     }
 
     void showWizard (const String& name)
@@ -231,54 +245,20 @@ public:
         showWizard (BlankAppWizard().getName());
     }
 
-    void openExampleProject()
-    {
-        FileChooser fc ("Open File", findExamplesFolder());
-
-        if (fc.browseForFileToOpen())
-            ProjucerApplication::getApp().openFile (fc.getResult());
-    }
-
-    static File findExamplesFolder()
-    {
-        File appFolder (File::getSpecialLocation (File::currentApplicationFile));
-
-        while (appFolder.exists()
-                && appFolder.getParentDirectory() != appFolder)
-        {
-            File examples (appFolder.getSiblingFile ("examples"));
-
-            if (examples.exists())
-                return examples;
-
-            appFolder = appFolder.getParentDirectory();
-        }
-
-        return File();
-    }
-
 private:
     OwnedArray<TemplateOptionButton> optionButtons;
     NewProjectWizardClasses::WizardComp* newProjectWizard;
-    ScopedPointer<TemplateOptionButton> blankProjectButton, openProjectButton, exampleProjectButton;
 
-    void buttonClicked (Button* b) override
+    TemplateOptionButton blankProjectButton   { "Create Blank Project",  TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg },
+                         openProjectButton    { "Open Existing Project", TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg },
+                         browseDemosButton    { "Browse JUCE Demos",     TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg },
+                         viewTutorialsButton  { "View JUCE Tutorials",   TemplateOptionButton::ImageOnButtonBackground, BinaryData::wizard_Openfile_svg };
+
+    void showWizardButton (Button* b)
     {
-        if (b == blankProjectButton)
-            createBlankProject();
-        else if (b == exampleProjectButton)
-            openExampleProject();
-        else if (dynamic_cast<TemplateOptionButton*> (b) != nullptr)
+        if (dynamic_cast<TemplateOptionButton*> (b) != nullptr)
             showWizard (b->getButtonText());
-    }
-
-    void buttonStateChanged (Button*) override
-    {
-        repaint();
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TemplateTileBrowser)
 };
-
-
-#endif   // JUCER_TEMPLATETHUMBNAILSCOMPONENT_H_INCLUDED
